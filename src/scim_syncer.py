@@ -6,6 +6,8 @@ from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 from msgraph import GraphServiceClient
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+# Import for explicit request configuration
+from msgraph.generated.service_principals.service_principals_request_builder import ServicePrincipalsRequestBuilder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -56,19 +58,25 @@ async def get_service_principal_id(
     """
     logger.info(f"Retrieving service principal for app ID: {app_id}")
     try:
-        # Define the request configurator function
-        def _request_configurator(request_config):
-            request_config.query_parameters.filter = f"appId eq '{app_id}'"
-            request_config.query_parameters.select = ["id", "appId", "displayName"] # Added displayName for richer logging
+        # Explicitly create and configure the request configuration object
+        query_params = ServicePrincipalsRequestBuilder.ServicePrincipalsRequestBuilderGetQueryParameters(
+            filter=f"appId eq '{app_id}'",
+            select=["id", "appId", "displayName"]
+        )
+        config = ServicePrincipalsRequestBuilder.ServicePrincipalsRequestBuilderGetRequestConfiguration(
+            query_parameters=query_params
+        )
 
         service_principals = await graph_client.service_principals.get(
-            request_configuration=_request_configurator
+            request_configuration=config
         )
         if service_principals and service_principals.value:
             sp = service_principals.value[0]
             sp_id = sp.id
-            sp_display_name = getattr(sp, 'display_name', 'N/A')
-            logger.info(f"Found service principal: ID '{sp_id}', App Display Name: '{getattr(sp, 'app_display_name', 'N/A')}', SP Display Name: '{sp_display_name}' for App ID: {app_id}")
+            # Ensure attribute access is safe with getattr, providing default if None
+            sp_display_name = getattr(sp, 'display_name', 'N/A') # Already good
+            app_display_name = getattr(sp, 'app_display_name', 'N/A') # Already good
+            logger.info(f"Found service principal: ID '{sp_id}', App Display Name: '{app_display_name}', SP Display Name: '{sp_display_name}' for App ID: {app_id}")
             return sp_id
         else:
             logger.warning(f"Service principal not found for app ID: {app_id}")

@@ -124,21 +124,15 @@ async def test_get_service_principal_id_success(mock_graph_service_client):
     mock_graph_service_client.service_principals.get.assert_called_once()
     call_args, call_kwargs = mock_graph_service_client.service_principals.get.call_args
 
-    # Create a mock request_config object to simulate the one passed to the lambda
-    mock_req_config = MagicMock()
-    mock_req_config.query_parameters = MagicMock()
-    # Initialize filter and select attributes as None or some other non-MagicMock value
-    # so we can assert they were set.
-    mock_req_config.query_parameters.filter = None
-    mock_req_config.query_parameters.select = None
+    # The request_configuration is now an object, not a lambda
+    assert "request_configuration" in call_kwargs
+    passed_config_object = call_kwargs["request_configuration"]
 
-    # Execute the lambda with the mock config
-    request_config_lambda = call_kwargs["request_configuration"] 
-    request_config_lambda(mock_req_config)
-
-    # Assert that the lambda set the correct attributes on the mock config's query_parameters
-    assert mock_req_config.query_parameters.filter == f"appId eq '{TEST_APP_ID}'"
-    assert mock_req_config.query_parameters.select == ["id", "appId", "displayName"]
+    # Assert that the passed config object has the correct query parameters
+    assert passed_config_object is not None
+    assert passed_config_object.query_parameters is not None
+    assert passed_config_object.query_parameters.filter == f"appId eq '{TEST_APP_ID}'"
+    assert passed_config_object.query_parameters.select == ["id", "appId", "displayName"]
 
     assert sp_id == TEST_SP_ID
 
