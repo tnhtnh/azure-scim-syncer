@@ -1,0 +1,67 @@
+name: Azure SCIM Sync
+
+on:
+  workflow_dispatch: # Allows manual triggering
+  # schedule:
+  #   - cron: '0 2 * * *' # Example: Run daily at 2 AM UTC
+
+permissions:
+  id-token: write # Required for OIDC to authenticate to Azure
+  contents: read # Required to checkout the repository
+
+jobs:
+  scim_sync:
+    runs-on: ubuntu-latest
+    # Optional: Define an environment if you have environment-specific secrets or rules
+    # environment: production 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Specify your desired Python version
+          cache: 'pip' # Cache pip dependencies
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }} # Client ID of the Azure AD app registration for OIDC
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }} # Tenant ID of your Azure AD
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} # Required by azure/login action, even if script primarily uses Graph API
+          enable-AzPSSession: false # Set to true if you also need Azure PowerShell
+
+      - name: Run Azure SCIM Syncer Script
+        env:
+          AZURE_APP_ID: ${{ secrets.AZURE_APP_ID }} # Client ID of the Enterprise Application to sync
+          RUN_ON_DEMAND_PROVISIONING: 'false' # Default to false. Set to 'true' in secrets/vars to run on-demand.
+          # Ensure other necessary env vars for DefaultAzureCredential (like AZURE_FEDERATED_TOKEN_FILE, AZURE_AUTHORITY_HOST) are set by azure/login
+        run: python src/scim_syncer.py
+
+      - name: Run Pytest Tests
+        env:
+          AZURE_APP_ID: "38b38689-7b69-4908-beba-096f310b8090" # Use a test app ID for tests
+          # Add any other environment variables needed for tests
+        run: |
+          pytest tests/test_scim_syncer.py --cov=src --cov-report=xml
+      
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }} # Optional: if your repository is private
+          # files: ./coverage.xml # Optional: specify coverage file if not default
+          # fail_ci_if_error: true # Optional: fail CI if Codecov upload fails
+          # verbose: true # Optional: for detailed logs
+
+      - name: Azure Logout
+        if: always() # Ensures logout happens even if previous steps fail
+        run: |
+          az logout
+          az account clear
+        continue-on-error: true # Prevent workflow failure if logout fails for some reason 

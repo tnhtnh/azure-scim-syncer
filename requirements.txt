@@ -1,0 +1,6 @@
+azure-identity
+msgraph-sdk
+pytest
+pytest-cov
+requests-mock
+python-dotenv 
