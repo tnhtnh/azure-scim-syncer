@@ -37,7 +37,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Azure Login via OIDC
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }} # Client ID of the Azure AD app registration for OIDC
           tenant-id: ${{ secrets.AZURE_TENANT_ID }} # Tenant ID of your Azure AD
