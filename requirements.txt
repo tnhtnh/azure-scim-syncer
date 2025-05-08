@@ -1,5 +1,5 @@
 azure-identity
-msgraph-sdk
+msgraph-sdk==1.5.4
 pytest
 pytest-cov
 requests-mock
