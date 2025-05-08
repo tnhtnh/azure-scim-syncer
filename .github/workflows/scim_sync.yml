@@ -34,8 +34,7 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }} # Client ID of the Azure AD app registration for OIDC
           tenant-id: ${{ secrets.AZURE_TENANT_ID }} # Tenant ID of your Azure AD
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} # Required by azure/login action, even if script primarily uses Graph API
-          enable-AzPSSession: false # Set to true if you also need Azure PowerShell
+          allow-no-subscriptions: true
 
       - name: Run Azure SCIM Syncer Script
         env:
