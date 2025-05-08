@@ -6,9 +6,6 @@ from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 from msgraph import GraphServiceClient
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
-from msgraph.generated.service_principals.item.synchronization.jobs.item.start.start_post_request_body import (
-    StartPostRequestBody,
-)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -22,10 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-AZURE_APP_ID = os.getenv("AZURE_APP_ID")
-if not AZURE_APP_ID:
-    logger.error("AZURE_APP_ID environment variable not set.")
-    sys.exit(1)
+# AZURE_APP_ID = os.getenv("AZURE_APP_ID") # Remove global assignment
 
 
 async def get_graph_client() -> GraphServiceClient:
@@ -168,17 +162,20 @@ async def main():
     logger.info("Starting SCIM provisioning process.")
     graph_client = None
     try:
-        graph_client = await get_graph_client()
-        if not AZURE_APP_ID:
-            logger.error("AZURE_APP_ID is not configured. Exiting.")
+        # Get AZURE_APP_ID inside the function
+        app_id_to_sync = os.getenv("AZURE_APP_ID")
+        if not app_id_to_sync:
+            logger.error("AZURE_APP_ID environment variable not set. Cannot run main sync.")
             return
 
+        graph_client = await get_graph_client()
+
         service_principal_id = await get_service_principal_id(
-            graph_client, AZURE_APP_ID
+            graph_client, app_id_to_sync # Use local variable
         )
         if not service_principal_id:
             logger.error(
-                f"Could not find service principal for app ID {AZURE_APP_ID}. Exiting."
+                f"Could not find service principal for app ID {app_id_to_sync}. Exiting."
             )
             return
 
@@ -346,6 +343,7 @@ async def provision_all_users_on_demand_in_app(graph_client: GraphServiceClient,
     This is an example of using the optional functions.
     """
     logger.info(f"Starting on-demand provisioning for all users in app ID: {app_id}")
+    # Note: app_id is passed directly to this function, no need to getenv here
     service_principal_id = await get_service_principal_id(graph_client, app_id)
     if not service_principal_id:
         logger.error(f"Cannot perform on-demand provisioning: Service principal not found for app {app_id}.")
@@ -390,34 +388,27 @@ async def provision_all_users_on_demand_in_app(graph_client: GraphServiceClient,
                 logger.error(f"Failed to provision user {user_id} on demand. Error: {e}")
     logger.info(f"Completed on-demand provisioning for users in app ID: {app_id}")
 
+async def cli_entry_point():
+    """Determines which workflow to run based on environment variables."""
+    if os.getenv("RUN_ON_DEMAND_PROVISIONING", "false").lower() == "true":
+        logger.info("RUN_ON_DEMAND_PROVISIONING is true, running on-demand sync.")
+        # Get AZURE_APP_ID inside the function where it's needed for this branch
+        app_id_for_demand = os.getenv("AZURE_APP_ID")
+        if not app_id_for_demand:
+            logger.error("AZURE_APP_ID environment variable not set. Cannot run on-demand provisioning.")
+            return
+        try:
+            client = await get_graph_client()
+            await provision_all_users_on_demand_in_app(client, app_id_for_demand) # Use local variable
+        except Exception as e:
+             logger.error(f"An error occurred during the on-demand provisioning process: {e}")
+             # Decide if you want to exit with error code here or just log
+    else:
+        logger.info("Running main synchronization job.")
+        # main() now fetches AZURE_APP_ID internally
+        await main()
 
 if __name__ == "__main__":
     import asyncio
-
-    # Example of running the main provisioning job
-    # asyncio.run(main())
-
-    # Example of running on-demand provisioning for all users in the app
-    # Ensure AZURE_APP_ID is set in your .env file or environment
-    # async def run_on_demand_example():
-    #     if not AZURE_APP_ID:
-    #         logger.error("AZURE_APP_ID is not set. Cannot run on-demand example.")
-    #         return
-    #     client = await get_graph_client()
-    #     await provision_all_users_on_demand_in_app(client, AZURE_APP_ID)
-    #
-    # asyncio.run(run_on_demand_example())
-
-    # Default to running the main sync job
-    if os.getenv("RUN_ON_DEMAND_PROVISIONING", "false").lower() == "true":
-        logger.info("RUN_ON_DEMAND_PROVISIONING is true, running on-demand sync.")
-        async def run_on_demand_workflow():
-            if not AZURE_APP_ID:
-                logger.error("AZURE_APP_ID is not set. Cannot run on-demand provisioning.")
-                return
-            client = await get_graph_client()
-            await provision_all_users_on_demand_in_app(client, AZURE_APP_ID)
-        asyncio.run(run_on_demand_workflow())
-    else:
-        logger.info("Running main synchronization job.")
-        asyncio.run(main()) 
+    # Run the new entry point function
+    asyncio.run(cli_entry_point()) 
