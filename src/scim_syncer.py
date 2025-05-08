@@ -56,25 +56,28 @@ async def get_service_principal_id(
     """
     logger.info(f"Retrieving service principal for app ID: {app_id}")
     try:
-        # The filter should be on appId, not displayName
+        # Define the request configurator function
+        def _request_configurator(request_config):
+            request_config.query_parameters.filter = f"appId eq '{app_id}'"
+            request_config.query_parameters.select = ["id", "appId", "displayName"] # Added displayName for richer logging
+
         service_principals = await graph_client.service_principals.get(
-            request_configuration=lambda request_config: (
-                request_config.query_parameters.filter(f"appId eq '{app_id}'"),
-                request_config.query_parameters.select(["id", "appId"]),
-            )
+            request_configuration=_request_configurator
         )
         if service_principals and service_principals.value:
-            sp_id = service_principals.value[0].id
-            logger.info(f"Found service principal ID: {sp_id}")
+            sp = service_principals.value[0]
+            sp_id = sp.id
+            sp_display_name = getattr(sp, 'display_name', 'N/A')
+            logger.info(f"Found service principal: ID '{sp_id}', App Display Name: '{getattr(sp, 'app_display_name', 'N/A')}', SP Display Name: '{sp_display_name}' for App ID: {app_id}")
             return sp_id
         else:
             logger.warning(f"Service principal not found for app ID: {app_id}")
             return None
     except ODataError as o_data_error:
-        logger.error(f"OData error retrieving service principal: {o_data_error.error.message}")
+        logger.error(f"OData error retrieving service principal for app ID {app_id}: {o_data_error.error.message}")
         raise
     except Exception as e:
-        logger.error(f"Error retrieving service principal: {e}")
+        logger.error(f"Error retrieving service principal for app ID {app_id}: {e}")
         raise
 
 
@@ -201,46 +204,52 @@ async def main():
 # Optional: Functions for provisionOnDemand (as requested in prompt)
 # These are not part of the main workflow but can be used for targeted provisioning.
 
-async def get_assigned_groups(graph_client: GraphServiceClient, service_principal_id: str) -> list[str]:
+async def get_assigned_groups(graph_client: GraphServiceClient, service_principal_id: str) -> list[dict[str, str | None]]:
     """
-    Retrieves IDs of groups assigned to the enterprise application.
+    Retrieves IDs and display names of groups assigned to the enterprise application.
 
     Args:
         graph_client: The Microsoft Graph client.
         service_principal_id: The object ID of the service principal.
 
     Returns:
-        list[str]: A list of group IDs.
+        list[dict[str, str | None]]: A list of dictionaries, where each dictionary
+                                     contains 'id' and 'displayName' of a group.
     """
     logger.info(f"Retrieving assigned groups for service principal ID: {service_principal_id}")
-    group_ids: list[str] = []
+    groups_info: list[dict[str, str | None]] = []
     try:
-        # Using appRoleAssignedTo to find assignments to this SP
+        def _request_configurator(request_config):
+            request_config.query_parameters.filter = "principalType eq 'Group'"
+            # Select principalId (group id) and principalDisplayName (group name)
+            request_config.query_parameters.select = ["principalId", "principalDisplayName"]
+
         assignments = await graph_client.service_principals.by_service_principal_id(service_principal_id).app_role_assigned_to.get(
-            request_configuration=lambda request_config: (
-                request_config.query_parameters.filter("principalType eq 'Group'"),
-                request_config.query_parameters.select(["principalId"]) # Select only the principalId (group id)
-            )
+            request_configuration=_request_configurator
         )
         if assignments and assignments.value:
             for assignment in assignments.value:
                 if assignment.principal_id:
-                    group_ids.append(assignment.principal_id)
-            logger.info(f"Found assigned group IDs: {group_ids}")
+                    group_id = assignment.principal_id
+                    # principal_display_name might be None if not available for some reason
+                    group_display_name = getattr(assignment, 'principal_display_name', None)
+                    groups_info.append({"id": group_id, "displayName": group_display_name})
+                    logger.info(f"Found assigned group: ID '{group_id}', Name: '{group_display_name or 'N/A'}'")
         else:
             logger.info(f"No groups found assigned to service principal ID: {service_principal_id}")
-        return group_ids
+        return groups_info
     except ODataError as o_data_error:
-        logger.error(f"OData error retrieving assigned groups: {o_data_error.error.message}")
+        logger.error(f"OData error retrieving assigned groups for SP ID {service_principal_id}: {o_data_error.error.message}")
         raise
     except Exception as e:
-        logger.error(f"Error retrieving assigned groups: {e}")
+        logger.error(f"Error retrieving assigned groups for SP ID {service_principal_id}: {e}")
         raise
 
 
 async def get_group_members(graph_client: GraphServiceClient, group_id: str) -> list[str]:
     """
     Retrieves user IDs of members in a specific group.
+    Logs user display name and UPN for better traceability.
 
     Args:
         graph_client: The Microsoft Graph client.
@@ -252,29 +261,33 @@ async def get_group_members(graph_client: GraphServiceClient, group_id: str) -> 
     logger.info(f"Retrieving members for group ID: {group_id}")
     user_ids: list[str] = []
     try:
+        def _request_configurator(request_config):
+            # Select user ID, displayName, and userPrincipalName
+            request_config.query_parameters.select = ["id", "displayName", "userPrincipalName", "userType"]
+            # Potentially filter for only User object types if /members returns other types
+            # request_config.query_parameters.filter = "microsoft.graph.user" # OData cast
+
         members = await graph_client.groups.by_group_id(group_id).members.get(
-            request_configuration=lambda request_config: (
-                request_config.query_parameters.select(["id"]) # Select only user IDs
-            )
+             request_configuration=_request_configurator
         )
-        # The response can contain different types of directoryObject, filter for users
-        # However, /members endpoint by default returns users, groups, devices.
-        # For provisionOnDemand, we typically need user objects.
-        # Assuming direct members are users for simplicity here.
-        # A more robust solution would check '@odata.type' == '#microsoft.graph.user'
         if members and members.value:
             for member in members.value:
-                if member.id: #  and member.odata_type == "#microsoft.graph.user": (add if needed)
+                # Ensure the member is a user and has an ID
+                # Check '@odata.type' if more filtering is needed, e.g. member.odata_type == "#microsoft.graph.user"
+                if member.id:
                     user_ids.append(member.id)
-            logger.info(f"Found user IDs in group {group_id}: {user_ids}")
+                    user_display_name = getattr(member, 'display_name', 'N/A')
+                    user_principal_name = getattr(member, 'user_principal_name', 'N/A')
+                    user_type = getattr(member, 'user_type', 'N/A') # Guest/Member
+                    logger.info(f"Found user in group {group_id}: ID '{member.id}', Name: '{user_display_name}', UPN: '{user_principal_name}', UserType: '{user_type}'")
         else:
             logger.info(f"No members found in group ID: {group_id}")
         return user_ids
     except ODataError as o_data_error:
-        logger.error(f"OData error retrieving group members: {o_data_error.error.message}")
+        logger.error(f"OData error retrieving members for group {group_id}: {o_data_error.error.message}")
         raise
     except Exception as e:
-        logger.error(f"Error retrieving group members: {e}")
+        logger.error(f"Error retrieving members for group {group_id}: {e}")
         raise
 
 async def provision_user_on_demand(
@@ -282,59 +295,53 @@ async def provision_user_on_demand(
     service_principal_id: str,
     job_id: str,
     user_id: str,
-    rule_id: str = "", # Often SCIM/AD2SCIM
+    # rule_id: str = "", # rule_id is part of the job's schema, not directly passed here for provisionOnDemand with SynchronizationJobSubject
 ):
     """
     Triggers on-demand provisioning for a specific user.
+    The rule_id to be used is typically configured within the synchronization job's schema
+    and is not passed as a direct parameter to this specific SDK call for provisionOnDemand
+    when using SynchronizationJobSubject.
 
     Args:
         graph_client: The Microsoft Graph client.
         service_principal_id: The object ID of the service principal.
         job_id: The ID of the synchronization job.
         user_id: The ID of the user to provision.
-        rule_id: The identifier of the synchronization rule to use.
-                 Commonly "SCIM" or the specific AD to SCIM connector's rule.
-                 This might need to be discovered from the synchronization schema.
-                 Forcing a default if not provided.
     """
     logger.info(
-        f"Triggering provisionOnDemand for user ID: {user_id} in job ID: {job_id}"
+        f"Attempting to trigger provisionOnDemand: User ID '{user_id}' (Object Type: 'User') "
+        f"for Job ID '{job_id}' on Service Principal ID '{service_principal_id}'."
     )
 
-    # The API expects a list of parameters.
-    # The '#microsoft.graph.synchronizationJobApplicationParameters' is a type hint for the API.
-    # We need to construct a list of SynchronizationJobApplicationParameters objects.
-    # Each parameter has 'name' and 'value' (which is a string).
-    # 'objectId' is the user's ID, 'subjectId' is also user's ID in this context.
-    # 'attributes' could be used to pass specific attributes for provisioning if needed.
-    # 'ruleId' is crucial. Defaulting to "SCIM" might work for some, but often it's specific.
-    # Example: ruleId = "ActiveDirectory->SCIM"
-    # This might require inspecting the job's schema to get the correct ruleId.
-
-    # Simplified payload for provisionOnDemand
-    # Adjust `parameters` if a more complex structure or specific ruleId is needed.
-    from msgraph.generated.models.synchronization_job_application_parameters import SynchronizationJobApplicationParameters
     from msgraph.generated.models.synchronization_job_subject import SynchronizationJobSubject
 
+    # Create the subject for the on-demand provisioning request
+    # The objectTypeName should match the type configured in the sync schema (e.g., "User", "Group")
     subject = SynchronizationJobSubject(
         object_id=user_id,
-        object_type_name="User" # Or appropriate type if not User
+        object_type_name="User" # Assuming "User", adjust if other types like "Group" are provisioned
     )
 
     try:
+        # The provisionOnDemand action takes a SynchronizationJobSubject as its body
         await graph_client.service_principals.by_service_principal_id(
             service_principal_id
         ).synchronization.jobs.by_synchronization_job_id(
             job_id
-        ).provision_on_demand.post(body=subject) # Pass the subject directly
-        logger.info(f"Successfully triggered provisionOnDemand for user ID: {user_id}")
+        ).provision_on_demand.post(body=subject)
+        logger.info(f"Successfully triggered provisionOnDemand for user ID: {user_id} via job ID: {job_id}")
     except ODataError as o_data_error:
         logger.error(
-            f"OData error during provisionOnDemand for user {user_id}: {o_data_error.error.message}"
+            f"OData error during provisionOnDemand for user {user_id} (Job ID: {job_id}): {o_data_error.error.message}"
         )
+        # Log more details from o_data_error if available and helpful
+        if o_data_error.error and o_data_error.error.details:
+            for detail in o_data_error.error.details:
+                logger.error(f"  Detail: Code: {detail.code}, Message: {detail.message}, Target: {detail.target}")
         raise
     except Exception as e:
-        logger.error(f"Error during provisionOnDemand for user {user_id}: {e}")
+        logger.error(f"Error during provisionOnDemand for user {user_id} (Job ID: {job_id}): {e}")
         raise
 
 async def provision_all_users_on_demand_in_app(graph_client: GraphServiceClient, app_id: str):
@@ -368,25 +375,40 @@ async def provision_all_users_on_demand_in_app(graph_client: GraphServiceClient,
     #     logger.warning(f"Could not discover ruleId, using default. Error: {e}")
 
 
-    assigned_group_ids = await get_assigned_groups(graph_client, service_principal_id)
-    if not assigned_group_ids:
-        logger.info("No groups assigned to the application. Nothing to provision on demand.")
+    assigned_groups_info = await get_assigned_groups(graph_client, service_principal_id)
+    if not assigned_groups_info:
+        logger.info(f"No groups assigned to the application (App ID: {app_id}, SP ID: {service_principal_id}). Nothing to provision on demand.")
         return
 
-    for group_id in assigned_group_ids:
+    logger.info(f"Found {len(assigned_groups_info)} group(s) assigned to App ID '{app_id}' (SP ID: {service_principal_id}) for on-demand provisioning.")
+
+    for group_info in assigned_groups_info:
+        group_id = group_info["id"]
+        group_display_name = group_info["displayName"] or "N/A"
+        logger.info(f"Processing group: ID '{group_id}', Name: '{group_display_name}' for on-demand user provisioning (App ID: {app_id}).")
+
         user_ids = await get_group_members(graph_client, group_id)
+        if not user_ids:
+            logger.info(f"No user members found in group '{group_display_name}' (ID: {group_id}). Skipping provisioning for this group.")
+            continue
+
+        logger.info(f"Found {len(user_ids)} user(s) in group '{group_display_name}' (ID: {group_id}). Attempting on-demand provisioning for each.")
         for user_id in user_ids:
+            logger.info(f"Attempting on-demand provisioning for User ID: {user_id} from group '{group_display_name}' (ID: {group_id}).")
             try:
                 await provision_user_on_demand(
                     graph_client,
                     service_principal_id,
                     job_id,
                     user_id,
-                    # rule_id=rule_id_to_use # Pass the discovered or default ruleId
+                    # rule_id parameter removed as it's not directly used in the SDK call with SynchronizationJobSubject
                 )
+                logger.info(f"Successfully initiated on-demand provisioning for User ID: {user_id} from group '{group_display_name}'.")
             except Exception as e:
-                logger.error(f"Failed to provision user {user_id} on demand. Error: {e}")
-    logger.info(f"Completed on-demand provisioning for users in app ID: {app_id}")
+                # Log the specific user_id and group_id where the error occurred
+                logger.error(f"Failed to provision User ID '{user_id}' from group '{group_display_name}' (ID: {group_id}) on demand. Error: {e}")
+                # Optionally, decide whether to continue with other users/groups or stop
+    logger.info(f"Completed on-demand provisioning process for users in App ID: {app_id} (SP ID: {service_principal_id}).")
 
 async def cli_entry_point():
     """Determines which workflow to run based on environment variables."""

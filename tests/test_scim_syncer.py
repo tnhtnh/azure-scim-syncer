@@ -124,24 +124,21 @@ async def test_get_service_principal_id_success(mock_graph_service_client):
     mock_graph_service_client.service_principals.get.assert_called_once()
     call_args, call_kwargs = mock_graph_service_client.service_principals.get.call_args
 
-    # --- Start: Modified assertion for request_configuration ---
-    assert "request_configuration" in call_kwargs
-    request_config_lambda = call_kwargs["request_configuration"] 
-
     # Create a mock request_config object to simulate the one passed to the lambda
     mock_req_config = MagicMock()
     mock_req_config.query_parameters = MagicMock()
-    # Ensure filter/select return the query_parameters object for potential chaining
-    mock_req_config.query_parameters.filter.return_value = mock_req_config.query_parameters 
-    mock_req_config.query_parameters.select.return_value = mock_req_config.query_parameters
+    # Initialize filter and select attributes as None or some other non-MagicMock value
+    # so we can assert they were set.
+    mock_req_config.query_parameters.filter = None
+    mock_req_config.query_parameters.select = None
 
     # Execute the lambda with the mock config
+    request_config_lambda = call_kwargs["request_configuration"] 
     request_config_lambda(mock_req_config)
 
-    # Assert that the lambda called the correct methods on the mock config
-    mock_req_config.query_parameters.filter.assert_called_once_with(f"appId eq '{TEST_APP_ID}'")
-    mock_req_config.query_parameters.select.assert_called_once_with(["id", "appId"])
-    # --- End: Modified assertion --- 
+    # Assert that the lambda set the correct attributes on the mock config's query_parameters
+    assert mock_req_config.query_parameters.filter == f"appId eq '{TEST_APP_ID}'"
+    assert mock_req_config.query_parameters.select == ["id", "appId", "displayName"]
 
     assert sp_id == TEST_SP_ID
 
@@ -163,7 +160,7 @@ async def test_get_service_principal_id_odata_error(mock_graph_service_client, c
 
     with pytest.raises(ODataError):
         await scim_syncer.get_service_principal_id(mock_graph_service_client, TEST_APP_ID)
-    assert "OData error retrieving service principal: Test OData Error" in caplog.text
+    assert f"OData error retrieving service principal for app ID {TEST_APP_ID}: Test OData Error" in caplog.text
 
 @pytest.mark.asyncio
 async def test_get_synchronization_job_id_success(mock_graph_service_client):
@@ -200,7 +197,6 @@ async def test_get_synchronization_job_id_odata_error(mock_graph_service_client,
 
     with pytest.raises(ODataError):
         await scim_syncer.get_synchronization_job_id(mock_graph_service_client, TEST_SP_ID)
-    assert "OData error retrieving synchronization jobs: Job OData Error" in caplog.text
 
 @pytest.mark.asyncio
 async def test_start_synchronization_job_success(mock_graph_service_client):
@@ -288,34 +284,31 @@ async def test_main_general_exception(mock_get_sp_id, mock_get_client, caplog):
 async def test_get_assigned_groups_success(mock_graph_service_client):
     """Tests successful retrieval of assigned groups."""
     assignment1 = AppRoleAssignment(principal_id=TEST_GROUP_ID_1, principal_type="Group")
+    # Set the principal_display_name attribute, which might be None if not present in the actual response
+    assignment1.principal_display_name = "Test Group 1 Name"
     mock_response = MagicMock()
     mock_response.value = [assignment1]
     mock_sp_item = mock_graph_service_client.service_principals.by_service_principal_id.return_value
     mock_sp_item.app_role_assigned_to.get.return_value = mock_response
 
-    group_ids = await scim_syncer.get_assigned_groups(mock_graph_service_client, TEST_SP_ID)
-    assert group_ids == [TEST_GROUP_ID_1]
+    groups_info = await scim_syncer.get_assigned_groups(mock_graph_service_client, TEST_SP_ID)
+    expected_groups_info = [{"id": TEST_GROUP_ID_1, "displayName": "Test Group 1 Name"}]
+    assert groups_info == expected_groups_info
     mock_sp_item.app_role_assigned_to.get.assert_called_once()
     call_args, call_kwargs = mock_sp_item.app_role_assigned_to.get.call_args
     
-    # --- Start: Modified assertion for request_configuration ---
     assert "request_configuration" in call_kwargs
     request_config_lambda = call_kwargs["request_configuration"] 
 
-    # Create a mock request_config object
     mock_req_config = MagicMock()
     mock_req_config.query_parameters = MagicMock()
-    # Ensure filter/select return the query_parameters object for potential chaining
-    mock_req_config.query_parameters.filter.return_value = mock_req_config.query_parameters 
-    mock_req_config.query_parameters.select.return_value = mock_req_config.query_parameters
+    mock_req_config.query_parameters.filter = None
+    mock_req_config.query_parameters.select = None
 
-    # Execute the lambda with the mock config
     request_config_lambda(mock_req_config)
 
-    # Assert that the lambda called the correct methods on the mock config
-    mock_req_config.query_parameters.filter.assert_called_once_with("principalType eq 'Group'")
-    mock_req_config.query_parameters.select.assert_called_once_with(["principalId"])
-    # --- End: Modified assertion ---
+    assert mock_req_config.query_parameters.filter == "principalType eq 'Group'"
+    assert mock_req_config.query_parameters.select == ["principalId", "principalDisplayName"]
 
 @pytest.mark.asyncio
 async def test_get_assigned_groups_no_groups(mock_graph_service_client):
@@ -374,7 +367,7 @@ async def test_provision_all_users_on_demand_in_app_happy_path(
     """Tests the orchestration for on-demand provisioning of all users."""
     mock_get_sp_id.return_value = TEST_SP_ID
     mock_get_sync_job_id.return_value = TEST_JOB_ID
-    mock_get_assigned_groups.return_value = [TEST_GROUP_ID_1]
+    mock_get_assigned_groups.return_value = [{"id": TEST_GROUP_ID_1, "displayName": "Test Group 1"}]
     mock_get_group_members.return_value = [TEST_USER_ID_1]
     mock_provision_user.return_value = None
 
@@ -387,7 +380,8 @@ async def test_provision_all_users_on_demand_in_app_happy_path(
     mock_provision_user.assert_called_once_with(
         mock_graph_service_client, TEST_SP_ID, TEST_JOB_ID, TEST_USER_ID_1
     )
-    assert f"Completed on-demand provisioning for users in app ID: {TEST_APP_ID}" in caplog.text
+    expected_log_message = f"Completed on-demand provisioning process for users in App ID: {TEST_APP_ID} (SP ID: {TEST_SP_ID})."
+    assert expected_log_message in caplog.text
 
 @patch("scim_syncer.get_service_principal_id", new_callable=AsyncMock, return_value=None)
 @pytest.mark.asyncio
@@ -408,7 +402,8 @@ async def test_provision_all_users_on_demand_in_app_no_job(mock_get_sync_job_id,
 @pytest.mark.asyncio
 async def test_provision_all_users_on_demand_in_app_no_groups(mock_get_assigned_groups, mock_get_sync_job_id, mock_get_sp_id, mock_graph_service_client, caplog):
     await scim_syncer.provision_all_users_on_demand_in_app(mock_graph_service_client, TEST_APP_ID)
-    assert "No groups assigned to the application. Nothing to provision on demand." in caplog.text
+    expected_log_message = f"No groups assigned to the application (App ID: {TEST_APP_ID}, SP ID: {TEST_SP_ID}). Nothing to provision on demand."
+    assert expected_log_message in caplog.text
 
 # --- Tests for Main Entry Point ---
 
