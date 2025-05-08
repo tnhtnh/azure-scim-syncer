@@ -6,9 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from azure.identity.aio import DefaultAzureCredential # For async mocking
 from msgraph import GraphServiceClient
-from msgraph.generated.models import (
-    ServicePrincipal, ServicePrincipalCollection, SynchronizationJob, SynchronizationJobCollection, AppRoleAssignment, AppRoleAssignmentCollection, User, DirectoryObjectCollection
-)
+from msgraph.generated.models.service_principal import ServicePrincipal
+from msgraph.generated.models.synchronization_job import SynchronizationJob
+from msgraph.generated.models.app_role_assignment import AppRoleAssignment
+from msgraph.generated.models.user import User
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.o_data_errors.main_error import MainError
 
@@ -43,21 +44,47 @@ def set_env_vars(monkeypatch):
 
 @pytest.fixture
 def mock_graph_service_client():
+    """Provides a mock GraphServiceClient with mocked fluent methods."""
     mock_client = AsyncMock(spec=GraphServiceClient)
-    # Mock the fluent API structure
-    mock_client.service_principals = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value.synchronization = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value.synchronization.jobs = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value.synchronization.jobs.by_synchronization_job_id.return_value = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value.synchronization.jobs.by_synchronization_job_id.return_value.start = AsyncMock()
 
-    # For optional functions
-    mock_client.service_principals.by_service_principal_id.return_value.app_role_assigned_to = AsyncMock()
-    mock_client.groups = AsyncMock()
-    mock_client.groups.by_group_id.return_value = AsyncMock()
-    mock_client.groups.by_group_id.return_value.members = AsyncMock()
-    mock_client.service_principals.by_service_principal_id.return_value.synchronization.jobs.by_synchronization_job_id.return_value.provision_on_demand = AsyncMock()
+    # Mock service_principals attribute
+    mock_client.service_principals = MagicMock()
+
+    # Mock service_principals.get method (async)
+    mock_client.service_principals.get = AsyncMock()
+
+    # Mock service_principals.by_service_principal_id method (sync, returns builder)
+    mock_sp_item_builder = MagicMock(name="ServicePrincipalItemRequestBuilder")
+    mock_client.service_principals.by_service_principal_id.return_value = mock_sp_item_builder
+
+    # Mock attributes/methods on the ServicePrincipalItemRequestBuilder
+    mock_sp_item_builder.synchronization = MagicMock(name="SynchronizationRequestBuilder")
+    mock_sp_item_builder.synchronization.jobs = MagicMock(name="JobsRequestBuilder")
+    mock_sp_item_builder.synchronization.jobs.get = AsyncMock() # async action
+
+    mock_sync_job_item_builder = MagicMock(name="SynchronizationJobItemRequestBuilder")
+    mock_sp_item_builder.synchronization.jobs.by_synchronization_job_id.return_value = mock_sync_job_item_builder
+
+    mock_sync_job_item_builder.start = MagicMock(name="StartRequestBuilder")
+    mock_sync_job_item_builder.start.post = AsyncMock() # async action
+
+    mock_sync_job_item_builder.provision_on_demand = MagicMock(name="ProvisionOnDemandRequestBuilder")
+    mock_sync_job_item_builder.provision_on_demand.post = AsyncMock() # async action
+
+    mock_sp_item_builder.app_role_assigned_to = MagicMock(name="AppRoleAssignedToRequestBuilder")
+    mock_sp_item_builder.app_role_assigned_to.get = AsyncMock() # async action
+
+    # Mock groups attribute
+    mock_client.groups = MagicMock()
+
+    # Mock groups.by_group_id method (sync, returns builder)
+    mock_group_item_builder = MagicMock(name="GroupItemRequestBuilder")
+    mock_client.groups.by_group_id.return_value = mock_group_item_builder
+
+    # Mock attributes/methods on the GroupItemRequestBuilder
+    mock_group_item_builder.members = MagicMock(name="MembersRequestBuilder")
+    mock_group_item_builder.members.get = AsyncMock() # async action
+
     return mock_client
 
 @patch("scim_syncer.DefaultAzureCredential", spec=DefaultAzureCredential)
@@ -88,21 +115,42 @@ async def test_get_graph_client_failure(MockDefaultAzureCredential):
 async def test_get_service_principal_id_success(mock_graph_service_client):
     """Tests successful retrieval of service principal ID."""
     sp = ServicePrincipal(id=TEST_SP_ID, app_id=TEST_APP_ID)
-    sp_collection = ServicePrincipalCollection(value=[sp])
-    mock_graph_service_client.service_principals.get.return_value = sp_collection
+    mock_response = MagicMock()
+    mock_response.value = [sp]
+    mock_graph_service_client.service_principals.get.return_value = mock_response
 
     sp_id = await scim_syncer.get_service_principal_id(mock_graph_service_client, TEST_APP_ID)
 
     mock_graph_service_client.service_principals.get.assert_called_once()
-    args, kwargs = mock_graph_service_client.service_principals.get.call_args
-    assert kwargs["request_configuration"].query_parameters.filter == f"appId eq '{TEST_APP_ID}'"
+    call_args, call_kwargs = mock_graph_service_client.service_principals.get.call_args
+
+    # --- Start: Modified assertion for request_configuration ---
+    assert "request_configuration" in call_kwargs
+    request_config_lambda = call_kwargs["request_configuration"] 
+
+    # Create a mock request_config object to simulate the one passed to the lambda
+    mock_req_config = MagicMock()
+    mock_req_config.query_parameters = MagicMock()
+    # Ensure filter/select return the query_parameters object for potential chaining
+    mock_req_config.query_parameters.filter.return_value = mock_req_config.query_parameters 
+    mock_req_config.query_parameters.select.return_value = mock_req_config.query_parameters
+
+    # Execute the lambda with the mock config
+    request_config_lambda(mock_req_config)
+
+    # Assert that the lambda called the correct methods on the mock config
+    mock_req_config.query_parameters.filter.assert_called_once_with(f"appId eq '{TEST_APP_ID}'")
+    mock_req_config.query_parameters.select.assert_called_once_with(["id", "appId"])
+    # --- End: Modified assertion --- 
+
     assert sp_id == TEST_SP_ID
 
 @pytest.mark.asyncio
 async def test_get_service_principal_id_not_found(mock_graph_service_client):
     """Tests service principal not found."""
-    sp_collection = ServicePrincipalCollection(value=[]) # Empty list
-    mock_graph_service_client.service_principals.get.return_value = sp_collection
+    mock_response = MagicMock()
+    mock_response.value = []
+    mock_graph_service_client.service_principals.get.return_value = mock_response
 
     sp_id = await scim_syncer.get_service_principal_id(mock_graph_service_client, TEST_APP_ID)
     assert sp_id is None
@@ -121,10 +169,10 @@ async def test_get_service_principal_id_odata_error(mock_graph_service_client, c
 async def test_get_synchronization_job_id_success(mock_graph_service_client):
     """Tests successful retrieval of synchronization job ID."""
     job = SynchronizationJob(id=TEST_JOB_ID)
-    job_collection = SynchronizationJobCollection(value=[job])
-    # Correctly mock the fluent call chain for jobs
+    mock_response = MagicMock()
+    mock_response.value = [job]
     mock_sp_item = mock_graph_service_client.service_principals.by_service_principal_id.return_value
-    mock_sp_item.synchronization.jobs.get.return_value = job_collection
+    mock_sp_item.synchronization.jobs.get.return_value = mock_response
 
     job_id = await scim_syncer.get_synchronization_job_id(mock_graph_service_client, TEST_SP_ID)
 
@@ -135,9 +183,10 @@ async def test_get_synchronization_job_id_success(mock_graph_service_client):
 @pytest.mark.asyncio
 async def test_get_synchronization_job_id_not_found(mock_graph_service_client):
     """Tests synchronization job not found."""
-    job_collection = SynchronizationJobCollection(value=[])
+    mock_response = MagicMock()
+    mock_response.value = []
     mock_sp_item = mock_graph_service_client.service_principals.by_service_principal_id.return_value
-    mock_sp_item.synchronization.jobs.get.return_value = job_collection
+    mock_sp_item.synchronization.jobs.get.return_value = mock_response
 
     job_id = await scim_syncer.get_synchronization_job_id(mock_graph_service_client, TEST_SP_ID)
     assert job_id is None
@@ -239,22 +288,42 @@ async def test_main_general_exception(mock_get_sp_id, mock_get_client, caplog):
 async def test_get_assigned_groups_success(mock_graph_service_client):
     """Tests successful retrieval of assigned groups."""
     assignment1 = AppRoleAssignment(principal_id=TEST_GROUP_ID_1, principal_type="Group")
-    assignment_collection = AppRoleAssignmentCollection(value=[assignment1])
+    mock_response = MagicMock()
+    mock_response.value = [assignment1]
     mock_sp_item = mock_graph_service_client.service_principals.by_service_principal_id.return_value
-    mock_sp_item.app_role_assigned_to.get.return_value = assignment_collection
+    mock_sp_item.app_role_assigned_to.get.return_value = mock_response
 
     group_ids = await scim_syncer.get_assigned_groups(mock_graph_service_client, TEST_SP_ID)
     assert group_ids == [TEST_GROUP_ID_1]
     mock_sp_item.app_role_assigned_to.get.assert_called_once()
-    args, kwargs = mock_sp_item.app_role_assigned_to.get.call_args
-    assert kwargs["request_configuration"].query_parameters.filter == "principalType eq 'Group'"
+    call_args, call_kwargs = mock_sp_item.app_role_assigned_to.get.call_args
+    
+    # --- Start: Modified assertion for request_configuration ---
+    assert "request_configuration" in call_kwargs
+    request_config_lambda = call_kwargs["request_configuration"] 
+
+    # Create a mock request_config object
+    mock_req_config = MagicMock()
+    mock_req_config.query_parameters = MagicMock()
+    # Ensure filter/select return the query_parameters object for potential chaining
+    mock_req_config.query_parameters.filter.return_value = mock_req_config.query_parameters 
+    mock_req_config.query_parameters.select.return_value = mock_req_config.query_parameters
+
+    # Execute the lambda with the mock config
+    request_config_lambda(mock_req_config)
+
+    # Assert that the lambda called the correct methods on the mock config
+    mock_req_config.query_parameters.filter.assert_called_once_with("principalType eq 'Group'")
+    mock_req_config.query_parameters.select.assert_called_once_with(["principalId"])
+    # --- End: Modified assertion ---
 
 @pytest.mark.asyncio
 async def test_get_assigned_groups_no_groups(mock_graph_service_client):
     """Tests retrieval when no groups are assigned."""
-    assignment_collection = AppRoleAssignmentCollection(value=[])
+    mock_response = MagicMock()
+    mock_response.value = []
     mock_sp_item = mock_graph_service_client.service_principals.by_service_principal_id.return_value
-    mock_sp_item.app_role_assigned_to.get.return_value = assignment_collection
+    mock_sp_item.app_role_assigned_to.get.return_value = mock_response
 
     group_ids = await scim_syncer.get_assigned_groups(mock_graph_service_client, TEST_SP_ID)
     assert group_ids == []
@@ -265,9 +334,10 @@ async def test_get_group_members_success(mock_graph_service_client):
     user1 = User(id=TEST_USER_ID_1)
     # odata_type is usually @odata.type in actual responses, but the model property is odata_type
     user1.odata_type = "#microsoft.graph.user" # Important for filtering if done in code
-    member_collection = DirectoryObjectCollection(value=[user1])
+    mock_response = MagicMock()
+    mock_response.value = [user1]
     mock_group_item = mock_graph_service_client.groups.by_group_id.return_value
-    mock_group_item.members.get.return_value = member_collection
+    mock_group_item.members.get.return_value = mock_response
 
     user_ids = await scim_syncer.get_group_members(mock_graph_service_client, TEST_GROUP_ID_1)
     assert user_ids == [TEST_USER_ID_1]
@@ -340,96 +410,45 @@ async def test_provision_all_users_on_demand_in_app_no_groups(mock_get_assigned_
     await scim_syncer.provision_all_users_on_demand_in_app(mock_graph_service_client, TEST_APP_ID)
     assert "No groups assigned to the application. Nothing to provision on demand." in caplog.text
 
+# --- Tests for Main Entry Point ---
 
-@patch("asyncio.run")
-@patch("scim_syncer.main")
-@patch.dict(os.environ, {"RUN_ON_DEMAND_PROVISIONING": "false"})
-def test_main_entry_point_runs_main(mock_main_func, mock_asyncio_run, caplog):
-    # Temporarily remove the __main__ guard to test the entry point logic
-    # This is a bit hacky, but necessary to test this part of the script
-    original_name = scim_syncer.__name__
-    scim_syncer.__name__ = "__main__"
-    try:
-        # Re-evaluate the if __name__ == "__main__": block by re-importing or exec
-        # Using exec to re-run the bottom part of the script
-        with open(os.path.join(src_path, "scim_syncer.py"), "r") as f:
-            script_content = f.read()
-        # Isolate the if __name__ == "__main__": block
-        main_block = script_content[script_content.find('if __name__ == "__main__":'):]
-        # Create a dictionary with the necessary mocks for the exec environment
-        exec_globals = {
-            "asyncio": asyncio,
-            "os": os,
-            "logger": scim_syncer.logger, # use the script's logger
-            "main": mock_main_func, # mock for the main sync
-            "get_graph_client": AsyncMock(), # mock for on-demand
-            "provision_all_users_on_demand_in_app": AsyncMock(), # mock for on-demand
-            "AZURE_APP_ID": TEST_APP_ID # Ensure AZURE_APP_ID is available
-        }
-        exec(main_block, exec_globals)
+# Remove the old exec-based tests:
+# def test_main_entry_point_runs_main(...)
+# def test_main_entry_point_runs_on_demand(...)
 
-        mock_asyncio_run.assert_called_once_with(mock_main_func())
-        assert "Running main synchronization job." in caplog.text
-    finally:
-        scim_syncer.__name__ = original_name # Restore original name
+# Add new tests for cli_entry_point
+@pytest.mark.asyncio
+@patch("scim_syncer.main", new_callable=AsyncMock) # Mock the target function
+@patch.dict(os.environ, {"RUN_ON_DEMAND_PROVISIONING": "false"}, clear=True) # Ensure only this var is set for the test
+async def test_cli_entry_point_runs_main(mock_main_func, caplog):
+    """Tests that cli_entry_point calls main() when RUN_ON_DEMAND_PROVISIONING is false."""
+    await scim_syncer.cli_entry_point()
+    mock_main_func.assert_awaited_once()
+    assert "Running main synchronization job." in caplog.text
 
-@patch("asyncio.run")
-@patch("scim_syncer.provision_all_users_on_demand_in_app")
-@patch("scim_syncer.get_graph_client") # Mock get_graph_client for on-demand
-@patch.dict(os.environ, {"RUN_ON_DEMAND_PROVISIONING": "true", "AZURE_APP_ID": TEST_APP_ID})
-def test_main_entry_point_runs_on_demand(mock_get_graph_client, mock_on_demand_func, mock_asyncio_run, caplog):
-    original_name = scim_syncer.__name__
-    scim_syncer.__name__ = "__main__"
-    mock_graph_client_instance = AsyncMock()
-    mock_get_graph_client.return_value = mock_graph_client_instance
+@pytest.mark.asyncio
+@patch("scim_syncer.get_graph_client", new_callable=AsyncMock) # Mock dependency
+@patch("scim_syncer.provision_all_users_on_demand_in_app", new_callable=AsyncMock) # Mock target function
+@patch.dict(os.environ, {"RUN_ON_DEMAND_PROVISIONING": "true", "AZURE_APP_ID": TEST_APP_ID}, clear=True) # Set env vars for this test
+async def test_cli_entry_point_runs_on_demand(mock_on_demand_func, mock_get_graph_client, caplog):
+    """Tests that cli_entry_point calls provision_all_users_on_demand_in_app when RUN_ON_DEMAND_PROVISIONING is true."""
+    mock_client = AsyncMock(name="MockGraphClientForDemand")
+    mock_get_graph_client.return_value = mock_client
 
-    try:
-        with open(os.path.join(src_path, "scim_syncer.py"), "r") as f:
-            script_content = f.read()
-        main_block = script_content[script_content.find('if __name__ == "__main__":'):]
-        
-        exec_globals = {
-            "asyncio": asyncio,
-            "os": os,
-            "logger": scim_syncer.logger,
-            "main": AsyncMock(), # Mock main, not used here
-            "get_graph_client": mock_get_graph_client, # Use the patched mock
-            "provision_all_users_on_demand_in_app": mock_on_demand_func,
-            "AZURE_APP_ID": TEST_APP_ID
-        }
-        exec(main_block, exec_globals)
-        
-        # Check that asyncio.run was called with the on-demand workflow
-        # The argument to asyncio.run will be the coroutine object
-        # We need to check that the correct functions within that coroutine were called.
-        # This is tricky as exec creates a new scope.
-        # Instead, we check if the top-level on_demand function was called via the mock
-        # and that the log message indicates on-demand mode.
-        
-        # The call to asyncio.run will be with an internal async function.
-        # We need to ensure that this internal function, when run, calls our mocks.
-        assert mock_asyncio_run.called
-        # To verify the internal calls, we'd need to capture the coroutine passed to asyncio.run
-        # and run it. For simplicity, we rely on the fact that if the log appears and
-        # the on-demand function is configured to be called by `asyncio.run`, it implies correctness.
-        # The `exec` makes direct assertion on `mock_on_demand_func.assert_called_once_with` hard.
-        
-        assert "RUN_ON_DEMAND_PROVISIONING is true, running on-demand sync." in caplog.text
-        # Further check if `provision_all_users_on_demand_in_app` was intended to be called
-        # by inspecting the mock_asyncio_run arguments if possible, or by checking side effects like logs.
-        # Given the exec model, direct assertions on calls within the exec'd block are complex.
-        # We can, however, assert that the `mock_on_demand_func` was called IF the structure inside exec allows it.
+    await scim_syncer.cli_entry_point()
+    
+    mock_get_graph_client.assert_awaited_once()
+    mock_on_demand_func.assert_awaited_once_with(mock_client, TEST_APP_ID)
+    assert "RUN_ON_DEMAND_PROVISIONING is true, running on-demand sync." in caplog.text
 
-        # Need to manually run the coroutine passed to `asyncio.run` to test its internals
-        # This is because the mock_on_demand_func is called *inside* the coroutine
-        if mock_asyncio_run.call_args:
-            coro_to_run = mock_asyncio_run.call_args[0][0]
-            asyncio.run(coro_to_run) # Actually run the captured coroutine
-            mock_get_graph_client.assert_called_once()
-            mock_on_demand_func.assert_called_once_with(mock_graph_client_instance, TEST_APP_ID)
-
-    finally:
-        scim_syncer.__name__ = original_name
-
-
-</rewritten_file>
+@pytest.mark.asyncio
+@patch("scim_syncer.get_graph_client", new_callable=AsyncMock)
+@patch("scim_syncer.provision_all_users_on_demand_in_app", new_callable=AsyncMock)
+@patch.dict(os.environ, {"RUN_ON_DEMAND_PROVISIONING": "true"}, clear=True) # AZURE_APP_ID is MISSING
+async def test_cli_entry_point_on_demand_missing_app_id(mock_on_demand_func, mock_get_graph_client, caplog):
+    """Tests cli_entry_point logs error and returns if AZURE_APP_ID is missing for on-demand."""
+    await scim_syncer.cli_entry_point()
+    
+    mock_get_graph_client.assert_not_awaited()
+    mock_on_demand_func.assert_not_awaited()
+    assert "AZURE_APP_ID environment variable not set. Cannot run on-demand provisioning." in caplog.text

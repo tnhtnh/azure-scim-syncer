@@ -1,6 +1,7 @@
 azure-identity
-msgraph-sdk
+msgraph-sdk==1.5.4
 pytest
 pytest-cov
+pytest-asyncio
 requests-mock
 python-dotenv 
