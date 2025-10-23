@@ -28,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.13' # Specify your desired Python version
+          python-version: '3.14' # Specify your desired Python version
           cache: 'pip' # Cache pip dependencies
 
       - name: Install dependencies
@@ -68,7 +68,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11' # Specify your desired Python version
+          python-version: '3.14' # Specify your desired Python version
           cache: 'pip' # Cache pip dependencies
 
       - name: Install dependencies
