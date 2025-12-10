@@ -84,7 +84,7 @@ jobs:
           pytest tests/test_scim_syncer.py --cov=src --cov-report=xml
       
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5.5.1
+        uses: codecov/codecov-action@v5.5.2
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # Optional: if your repository is private
           # files: ./coverage.xml # Optional: specify coverage file if not default
