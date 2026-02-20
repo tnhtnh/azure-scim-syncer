@@ -1,5 +1,5 @@
 azure-identity
-msgraph-sdk==1.54.0
+msgraph-sdk==1.55.0
 pytest
 pytest-cov
 pytest-asyncio
